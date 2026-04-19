@@ -20,14 +20,18 @@ extern "C" {
 #include "../include/astra_token.h"
 #include "../include/astra_ir.h"
 #include "../include/astra_error.h"
+#include "../include/astra_version.h"
+#include "../include/astra_opcode_table.h"
 }
 
 #include "parser/parser.h"
 #include "sema/sema.h"
 #include "opt/optimizer.h"
+#include "opt/opt_level.h"
 #include "ir/codegen.h"
+#include "module/resolver.h"
 
-#define ASTRAC_VERSION "1.2.0"
+#define ASTRAC_VERSION ASTRA_COMPILER_VERSION
 
 // ---- file I/O ----
 static std::string read_file(const char *path) {
@@ -112,7 +116,7 @@ static void write_module(const IRModule &mod, const char *out_path, bool debug_f
 }
 
 // ---- compile pipeline ----
-static IRModule compile(const char *src_path, bool enable_opt, bool debug_mode) {
+static IRModule compile(const char *src_path, astra::OptLevel opt_level, bool debug_mode) {
     std::string src = read_file(src_path);
     std::vector<Token> tokens = lex_all(src, src_path);
 
@@ -143,10 +147,8 @@ static IRModule compile(const char *src_path, bool enable_opt, bool debug_mode) 
         exit(1);
     }
 
-    if (enable_opt) {
-        astra::Optimizer opt;
-        opt.run(mod);
-    }
+    astra::Optimizer opt(opt_level);
+    opt.run(mod);
 
     astra::IRCodegen cg;
     return cg.generate(mod);
@@ -154,27 +156,31 @@ static IRModule compile(const char *src_path, bool enable_opt, bool debug_mode) 
 
 // ---- commands ----
 static void cmd_version() {
-    printf("astrac %s  (bytecode v%d.%d)\n",
+    printf("astrac %s  (bytecode v%d.%d, stdlib v%s)\n",
            ASTRAC_VERSION,
            ASTRA_BYTECODE_MAJOR,
-           ASTRA_BYTECODE_MINOR);
+           ASTRA_BYTECODE_MINOR,
+           ASTRA_STDLIB_VERSION);
 }
 
 static void cmd_build(int argc, char **argv) {
     const char *src_path = nullptr;
     const char *out_path = nullptr;
     bool debug_mode = false;
-    bool no_opt     = false;
+    bool no_opt     = false; (void)no_opt;
+    astra::OptLevel opt_level = astra::OptLevel::O2;
 
     for (int i = 0; i < argc; i++) {
-        if (strcmp(argv[i], "--debug") == 0)    debug_mode = true;
-        else if (strcmp(argv[i], "--no-opt") == 0) no_opt = true;
+        if (strcmp(argv[i], "--debug") == 0)       debug_mode = true;
+        else if (strcmp(argv[i], "--no-opt") == 0) { no_opt = true; opt_level = astra::OptLevel::O0; }
+        else if (strcmp(argv[i], "-O0") == 0)      opt_level = astra::OptLevel::O0;
+        else if (strcmp(argv[i], "-O1") == 0)      opt_level = astra::OptLevel::O1;
+        else if (strcmp(argv[i], "-O2") == 0)      opt_level = astra::OptLevel::O2;
         else if (strcmp(argv[i], "-o") == 0 && i+1 < argc) out_path = argv[++i];
         else if (argv[i][0] != '-') src_path = argv[i];
     }
-    if (!src_path) { fprintf(stderr, "usage: astrac build <src.as> [-o out.asc] [--debug] [--no-opt]\n"); exit(1); }
+    if (!src_path) { fprintf(stderr, "usage: astrac build <src.as> [-o out.asc] [-O0|-O1|-O2] [--debug]\n"); exit(1); }
 
-    // default output name: replace .as with .asc
     std::string auto_out;
     if (!out_path) {
         auto_out = src_path;
@@ -184,15 +190,16 @@ static void cmd_build(int argc, char **argv) {
         out_path = auto_out.c_str();
     }
 
-    IRModule ir = compile(src_path, !no_opt, debug_mode);
-    write_module(ir, out_path, debug_mode, !no_opt);
-    printf("[astrac] built %s → %s\n", src_path, out_path);
+    IRModule ir = compile(src_path, opt_level, debug_mode);
+    write_module(ir, out_path, debug_mode, opt_level >= astra::OptLevel::O1);
+    printf("[astrac] built %s -> %s  (%s)\n", src_path, out_path,
+           astra::opt_level_name(opt_level));
 }
 
 static void cmd_check(int argc, char **argv) {
     if (argc < 1) { fprintf(stderr, "usage: astrac check <src.as>\n"); exit(1); }
     const char *src_path = argv[0];
-    compile(src_path, false, false); // compile but discard output
+    compile(src_path, astra::OptLevel::O0, false);
     printf("[astrac] %s — OK\n", src_path);
 }
 
@@ -210,7 +217,7 @@ static void cmd_run(int argc, char **argv) {
     }
     if (!src_path) { fprintf(stderr, "usage: astrac run <src.as> [--trace]\n"); exit(1); }
 
-    IRModule ir = compile(src_path, true, false);
+    IRModule ir = compile(src_path, astra::OptLevel::O2, false);
     write_module(ir, "/tmp/astra_run.asc", false, true);
 
     // find runtime binary relative to this executable
@@ -241,10 +248,11 @@ static void cmd_disasm(int argc, char **argv) {
 static void usage() {
     printf("astrac %s — AstraLang compiler\n\n", ASTRAC_VERSION);
     printf("Commands:\n");
-    printf("  build  <src.as> [-o out.asc] [--debug] [--no-opt]\n");
+    printf("  build  <src.as> [-o out.asc] [-O0|-O1|-O2] [--debug]\n");
     printf("  run    <src.as> [--trace] [--stack-limit N]\n");
     printf("  check  <src.as>\n");
     printf("  disasm <file.asc>\n");
+    printf("  opcodes\n");
     printf("  version\n");
 }
 
@@ -260,6 +268,7 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "check")   == 0) { cmd_check(sub_argc, sub_argv);    return 0; }
     if (strcmp(cmd, "disasm")  == 0) { cmd_disasm(sub_argc, sub_argv);   return 0; }
     if (strcmp(cmd, "version") == 0) { cmd_version();                    return 0; }
+    if (strcmp(cmd, "opcodes") == 0) { astra_opcode_table_print();       return 0; }
 
     // legacy: if first arg is a .as file, treat as build
     if (strstr(argv[1], ".as") && argc >= 2) {

@@ -81,9 +81,9 @@ void Optimizer::opt_stmt(StmtPtr &s) {
         }
         else if constexpr (std::is_same_v<T, WhileStmt>) {
             node.cond = opt_expr(node.cond);
-            // dead loop elimination: while false { ... }
+            // O2: dead loop elimination — while false { ... }
             bool bval;
-            if (is_bool_lit(node.cond, bval) && !bval) {
+            if (level_ >= OptLevel::O2 && is_bool_lit(node.cond, bval) && !bval) {
                 s->data = BlockStmt{{}};
                 return;
             }

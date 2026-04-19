@@ -1,0 +1,11 @@
+# AstraLang Standard Library Manifest v1.0
+# Format: module_name  file  version  status
+#
+# status: stable | experimental | deprecated
+#
+# This file is the authoritative registry of all stdlib modules.
+# The compiler reads this file to resolve std:: imports.
+
+std::math      std_math.as      1.0  stable
+std::io        std_io.as        1.0  stable
+std::string    std_string.as    1.0  stable

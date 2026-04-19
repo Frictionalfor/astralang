@@ -32,8 +32,14 @@ void Parser::error(const std::string &msg) {
 AstraModule Parser::parse_module(const std::string &name) {
     AstraModule mod;
     mod.name = name;
+    size_t last_pos = pos_;
     while (!check(TOK_EOF)) {
         mod.items.push_back(parse_item());
+        // safety: if position didn't advance, force it to prevent infinite loop
+        if (pos_ == last_pos) {
+            consume(); // skip stuck token
+        }
+        last_pos = pos_;
     }
     return mod;
 }

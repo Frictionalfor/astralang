@@ -1,12 +1,8 @@
-// AstraLang Standard Library — io module
-// Provides: print, println, eprintln, read_line (extern bridge)
+// AstraLang Standard Library — std::io v1.0
+// Status: stable
+// Requires: bytecode v1.0+
 
 pub mod io {
-    extern fn print_str(s: str) -> void;
-    extern fn print_i64(n: i64) -> void;
-    extern fn print_f64(f: f64) -> void;
-    extern fn read_line() -> str;
-    extern fn flush() -> void;
 
     pub fn println_str(s: str) -> void {
         println(s);
@@ -18,5 +14,25 @@ pub mod io {
 
     pub fn println_f64(f: f64) -> void {
         println(f);
+    }
+
+    pub fn println_bool(b: bool) -> void {
+        if b {
+            println("true");
+        } else {
+            println("false");
+        }
+    }
+
+    pub fn print_str(s: str) -> void {
+        print(s);
+    }
+
+    pub fn print_i64(n: i64) -> void {
+        print(n);
+    }
+
+    pub fn newline() -> void {
+        println("");
     }
 }

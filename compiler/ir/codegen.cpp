@@ -138,23 +138,27 @@ void IRCodegen::gen_stmt(const StmtPtr &s) {
         else if constexpr (std::is_same_v<T, WhileStmt>)   gen_while(node);
         else if constexpr (std::is_same_v<T, ReturnStmt>)  gen_return(node);
         else if constexpr (std::is_same_v<T, ExprStmt>) {
-            // void calls (println/print/void fn) don't push a return value
-            bool is_void_call = false;
+            // Determine if this expression leaves a value on the stack
+            bool leaves_value = true;
+
             if (auto *call = std::get_if<CallExpr>(&node.expr->data)) {
                 if (auto *id = std::get_if<IdentExpr>(&call->callee->data)) {
-                    if (id->name == "println" || id->name == "print") is_void_call = true;
-                    else {
-                        // check if fn returns void
-                        auto it = fn_idx_.find(id->name);
-                        if (it != fn_idx_.end()) {
-                            // void fns emit RETURN_VOID which doesn't push
-                            is_void_call = true;
-                        }
-                    }
+                    if (id->name == "println" || id->name == "print") leaves_value = false;
+                    else if (fn_idx_.count(id->name))                 leaves_value = false;
                 }
+            } else if (std::get_if<AssignExpr>(&node.expr->data)) {
+                // Assignment as statement: don't DUP, just store and discard
+                const AssignExpr &assign = std::get<AssignExpr>(node.expr->data);
+                gen_expr(assign.rhs);
+                if (auto *ident = std::get_if<IdentExpr>(&assign.lhs->data)) {
+                    auto it = locals_.find(ident->name);
+                    if (it != locals_.end()) emit(OP_STORE_LOCAL, it->second);
+                }
+                return; // nothing left on stack
             }
+
             gen_expr(node.expr);
-            if (!is_void_call) emit(OP_POP);
+            if (leaves_value) emit(OP_POP);
         }
         else if constexpr (std::is_same_v<T, ForStmt>) {
             // minimal: evaluate iter, discard
@@ -272,8 +276,9 @@ void IRCodegen::gen_expr(const ExprPtr &e) {
             gen_call(node);
         }
         else if constexpr (std::is_same_v<T, AssignExpr>) {
+            // In expression context: evaluate rhs, dup for result, store
             gen_expr(node.rhs);
-            emit(OP_DUP); // leave value on stack as expression result
+            emit(OP_DUP);
             if (auto *ident = std::get_if<IdentExpr>(&node.lhs->data)) {
                 auto it = locals_.find(ident->name);
                 if (it != locals_.end()) emit(OP_STORE_LOCAL, it->second);
