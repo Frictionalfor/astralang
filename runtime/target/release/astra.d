@@ -1,0 +1,1 @@
+/home/frictional/Desktop/astralang/runtime/target/release/astra: /home/frictional/Desktop/astralang/runtime/src/debugger.rs /home/frictional/Desktop/astralang/runtime/src/loader.rs /home/frictional/Desktop/astralang/runtime/src/main.rs /home/frictional/Desktop/astralang/runtime/src/vm.rs
