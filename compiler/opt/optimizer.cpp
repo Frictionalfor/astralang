@@ -33,6 +33,7 @@ ExprPtr Optimizer::make_bool(bool v, int line, int col) {
 
 // ---- entry ----
 void Optimizer::run(AstraModule &mod) {
+    if (level_ == OptLevel::O0) return; // no-op at O0
     for (auto &item : mod.items) opt_stmt(item);
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 #include "../ast/ast.h"
+#include "opt_level.h"
 
 namespace astra {
 
@@ -7,16 +8,24 @@ namespace astra {
  * AST-level optimizer pass.
  * Runs before IR codegen. Mutates the AST in place.
  *
- * Passes implemented:
+ * O1 passes:
  *   1. Constant folding   — evaluate compile-time constant expressions
  *   2. Dead code elim     — remove unreachable branches (if true/false literals)
  *   3. Expression simplify — identity/zero rules (x+0, x*1, x*0, etc.)
+ *
+ * O2 adds:
+ *   4. Dead loop elim     — remove while(false) loops
+ *   5. Unary folding      — -5, !true evaluated at compile time
+ *   6. Bool short-circuit — x && false => false, x || true => true
  */
 class Optimizer {
 public:
+    explicit Optimizer(OptLevel level = OptLevel::O2) : level_(level) {}
     void run(AstraModule &mod);
 
 private:
+    OptLevel level_;
+
     void opt_stmt(StmtPtr &s);
     void opt_block(BlockStmt &b);
     ExprPtr opt_expr(ExprPtr e);
