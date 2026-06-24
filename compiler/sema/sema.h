@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <stdexcept>
+#include <optional>
 
 namespace astra {
 
@@ -39,6 +40,7 @@ private:
 
     void analyze_stmt(StmtPtr &s);
     void collect_fns(const std::vector<StmtPtr> &items, const std::string &prefix);
+    void collect_structs(const std::vector<StmtPtr> &items);
     void analyze_fn(FnDeclStmt &fn);
     void analyze_block(BlockStmt &blk);
     void analyze_var_decl(VarDeclStmt &v);
@@ -50,11 +52,17 @@ private:
     TypePtr analyze_expr(ExprPtr &e);
     TypePtr analyze_call(CallExpr &c, ExprPtr &e);
 
+    std::string type_name(TypePtr t);
+    bool is_numeric(TypePtr t);
+    bool is_integer(TypePtr t);
+    bool is_bool(TypePtr t);
+    bool is_void(TypePtr t);
     bool types_compatible(TypePtr a, TypePtr b);
     void type_error(const std::string &msg, int line, int col);
 
     // function table: name -> FnDeclStmt*
     std::unordered_map<std::string, FnDeclStmt*> fn_table_;
+    std::unordered_map<std::string, StructDeclStmt*> struct_table_;
 };
 
 } // namespace astra

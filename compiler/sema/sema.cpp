@@ -1,5 +1,6 @@
 #include "sema.h"
 #include <sstream>
+#include <variant>
 
 namespace astra {
 
@@ -47,6 +48,51 @@ bool SemanticAnalyzer::types_compatible(TypePtr a, TypePtr b) {
     return true;
 }
 
+std::string SemanticAnalyzer::type_name(TypePtr t) {
+    if (!t) return "<unresolved>";
+    if (t->kind == TypeNode::Kind::Named) return t->name;
+    if (t->kind == TypeNode::Kind::Pointer) return "*" + type_name(t->inner);
+    if (t->kind == TypeNode::Kind::Array) return "[" + type_name(t->inner) + "]";
+    if (t->kind == TypeNode::Kind::Fn) return "fn";
+    switch (t->prim) {
+        case PrimType::I8: return "i8";
+        case PrimType::I16: return "i16";
+        case PrimType::I32: return "i32";
+        case PrimType::I64: return "i64";
+        case PrimType::U8: return "u8";
+        case PrimType::U16: return "u16";
+        case PrimType::U32: return "u32";
+        case PrimType::U64: return "u64";
+        case PrimType::F32: return "f32";
+        case PrimType::F64: return "f64";
+        case PrimType::Bool: return "bool";
+        case PrimType::Str: return "str";
+        case PrimType::Void: return "void";
+    }
+    return "<unknown>";
+}
+
+bool SemanticAnalyzer::is_integer(TypePtr t) {
+    if (!t || t->kind != TypeNode::Kind::Primitive) return false;
+    return t->prim == PrimType::I8 || t->prim == PrimType::I16 ||
+           t->prim == PrimType::I32 || t->prim == PrimType::I64 ||
+           t->prim == PrimType::U8 || t->prim == PrimType::U16 ||
+           t->prim == PrimType::U32 || t->prim == PrimType::U64;
+}
+
+bool SemanticAnalyzer::is_numeric(TypePtr t) {
+    if (!t || t->kind != TypeNode::Kind::Primitive) return false;
+    return is_integer(t) || t->prim == PrimType::F32 || t->prim == PrimType::F64;
+}
+
+bool SemanticAnalyzer::is_bool(TypePtr t) {
+    return t && t->kind == TypeNode::Kind::Primitive && t->prim == PrimType::Bool;
+}
+
+bool SemanticAnalyzer::is_void(TypePtr t) {
+    return t && t->kind == TypeNode::Kind::Primitive && t->prim == PrimType::Void;
+}
+
 void SemanticAnalyzer::analyze(AstraModule &mod) {
     // Register built-in functions
     static FnDeclStmt println_fn, print_fn;
@@ -57,9 +103,30 @@ void SemanticAnalyzer::analyze(AstraModule &mod) {
 
     // First pass: collect function signatures (including inside mods)
     collect_fns(mod.items, "");
+    collect_structs(mod.items);
+    auto main_it = fn_table_.find("main");
+    if (main_it == fn_table_.end() || main_it->second->is_extern) {
+        type_error("missing required entrypoint 'fn main() -> void'", 0, 0);
+    }
+    if (!main_it->second->params.empty()) {
+        type_error("entrypoint 'main' must not take parameters", 0, 0);
+    }
+    if (!is_void(main_it->second->ret_type)) {
+        type_error("entrypoint 'main' must return void", 0, 0);
+    }
     push_scope();
     for (auto &item : mod.items) analyze_stmt(item);
     pop_scope();
+}
+
+void SemanticAnalyzer::collect_structs(const std::vector<StmtPtr> &items) {
+    for (auto &item : items) {
+        if (auto *st = std::get_if<StructDeclStmt>(&item->data)) {
+            struct_table_[st->name] = st;
+        } else if (auto *mod = std::get_if<ModDeclStmt>(&item->data)) {
+            collect_structs(mod->items);
+        }
+    }
 }
 
 void SemanticAnalyzer::collect_fns(const std::vector<StmtPtr> &items, const std::string &prefix) {
@@ -124,22 +191,27 @@ void SemanticAnalyzer::analyze_var_decl(VarDeclStmt &v) {
     TypePtr inferred = nullptr;
     if (v.init) inferred = analyze_expr(v.init);
     TypePtr ty = v.type_ann ? v.type_ann : inferred;
-    if (!ty) ty = make_prim(PrimType::Void);
+    if (!ty || is_void(ty)) {
+        type_error("variable '" + v.name + "' requires a non-void initializer or explicit type", 0, 0);
+    }
     if (v.type_ann && inferred && !types_compatible(v.type_ann, inferred)) {
-        // soft warning for now
+        type_error("type mismatch in declaration of '" + v.name + "': expected " +
+                   type_name(v.type_ann) + ", found " + type_name(inferred), 0, 0);
     }
     int slot = scopes_.empty() ? 0 : scopes_.back().next_slot();
     define({v.name, ty, v.is_mut, slot});
 }
 
 void SemanticAnalyzer::analyze_if(IfStmt &s) {
-    analyze_expr(s.cond);
+    TypePtr cond = analyze_expr(s.cond);
+    if (!is_bool(cond)) type_error("if condition must be bool, found " + type_name(cond), s.cond->line, s.cond->col);
     analyze_stmt(s.then_block);
     if (s.else_block) analyze_stmt(*s.else_block);
 }
 
 void SemanticAnalyzer::analyze_while(WhileStmt &s) {
-    analyze_expr(s.cond);
+    TypePtr cond = analyze_expr(s.cond);
+    if (!is_bool(cond)) type_error("while condition must be bool, found " + type_name(cond), s.cond->line, s.cond->col);
     analyze_stmt(s.body);
 }
 
@@ -156,8 +228,11 @@ void SemanticAnalyzer::analyze_return(ReturnStmt &s) {
     if (s.value) {
         TypePtr vt = analyze_expr(*s.value);
         if (ret && !types_compatible(ret, vt)) {
-            // type mismatch warning
+            type_error("return type mismatch: expected " + type_name(ret) +
+                       ", found " + type_name(vt), (*s.value)->line, (*s.value)->col);
         }
+    } else if (ret && !is_void(ret)) {
+        type_error("return type mismatch: expected " + type_name(ret) + ", found void", 0, 0);
     }
 }
 
@@ -182,29 +257,86 @@ TypePtr SemanticAnalyzer::analyze_expr(ExprPtr &e) {
         if constexpr (std::is_same_v<T, BinopExpr>) {
             TypePtr l = analyze_expr(node.lhs);
             TypePtr r = analyze_expr(node.rhs);
+            if (node.op == "&&" || node.op == "||") {
+                if (!is_bool(l) || !is_bool(r)) {
+                    type_error("logical operator '" + node.op + "' requires bool operands", e->line, e->col);
+                }
+                return make_prim(PrimType::Bool);
+            }
             // comparison ops return bool
             if (node.op == "==" || node.op == "!=" || node.op == "<" ||
-                node.op == ">"  || node.op == "<=" || node.op == ">=")
+                node.op == ">"  || node.op == "<=" || node.op == ">=") {
+                if (!types_compatible(l, r)) {
+                    type_error("comparison type mismatch: " + type_name(l) +
+                               " and " + type_name(r), e->line, e->col);
+                }
                 return make_prim(PrimType::Bool);
+            }
+            if (node.op == "&" || node.op == "|" || node.op == "^" ||
+                node.op == "<<" || node.op == ">>" || node.op == "%") {
+                if (!is_integer(l) || !is_integer(r) || !types_compatible(l, r)) {
+                    type_error("operator '" + node.op + "' requires matching integer operands", e->line, e->col);
+                }
+                return l;
+            }
+            if (node.op == "+" || node.op == "-" || node.op == "*" || node.op == "/") {
+                if (!is_numeric(l) || !is_numeric(r) || !types_compatible(l, r)) {
+                    type_error("operator '" + node.op + "' requires matching numeric operands", e->line, e->col);
+                }
+                return l;
+            }
             return l; // arithmetic: return lhs type
         }
         if constexpr (std::is_same_v<T, UnopExpr>) {
-            return analyze_expr(node.operand);
+            TypePtr inner = analyze_expr(node.operand);
+            if (node.op == "!" && !is_bool(inner)) {
+                type_error("operator '!' requires bool operand", e->line, e->col);
+            }
+            if ((node.op == "-" || node.op == "~") && !is_numeric(inner)) {
+                type_error("operator '" + node.op + "' requires numeric operand", e->line, e->col);
+            }
+            return inner;
         }
         if constexpr (std::is_same_v<T, CallExpr>) {
             return analyze_call(node, e);
         }
         if constexpr (std::is_same_v<T, AssignExpr>) {
-            analyze_expr(node.lhs);
-            return analyze_expr(node.rhs);
+            Symbol *target = nullptr;
+            if (auto *ident = std::get_if<IdentExpr>(&node.lhs->data)) {
+                target = lookup(ident->name);
+                if (!target) type_error("undefined symbol '" + ident->name + "'", node.lhs->line, node.lhs->col);
+            } else {
+                type_error("invalid assignment target", node.lhs->line, node.lhs->col);
+            }
+            if (!target->is_mut) {
+                type_error("cannot assign to immutable binding '" + target->name + "'", node.lhs->line, node.lhs->col);
+            }
+            TypePtr rhs = analyze_expr(node.rhs);
+            if (!types_compatible(target->type, rhs)) {
+                type_error("assignment type mismatch for '" + target->name + "': expected " +
+                           type_name(target->type) + ", found " + type_name(rhs),
+                           node.rhs->line, node.rhs->col);
+            }
+            return rhs;
         }
         if constexpr (std::is_same_v<T, CastExpr>) {
             analyze_expr(node.operand);
             return node.target;
         }
         if constexpr (std::is_same_v<T, FieldExpr>) {
-            analyze_expr(node.base);
-            return make_prim(PrimType::Void); // TODO: struct field lookup
+            TypePtr base_ty = analyze_expr(node.base);
+            if (!base_ty || base_ty->kind != TypeNode::Kind::Named) {
+                type_error("field access requires a struct value", e->line, e->col);
+            }
+            auto st = struct_table_.find(base_ty->name);
+            if (st == struct_table_.end()) {
+                type_error("unknown struct type '" + base_ty->name + "'", e->line, e->col);
+            }
+            for (const auto &field : st->second->fields) {
+                if (field.name == node.field) return field.type;
+            }
+            type_error("struct '" + base_ty->name + "' has no field '" + node.field + "'", e->line, e->col);
+            return make_prim(PrimType::Void);
         }
         if constexpr (std::is_same_v<T, IndexExpr>) {
             analyze_expr(node.base);
@@ -223,14 +355,44 @@ TypePtr SemanticAnalyzer::analyze_expr(ExprPtr &e) {
 TypePtr SemanticAnalyzer::analyze_call(CallExpr &c, ExprPtr &e) {
     // resolve callee name
     if (auto *ident = std::get_if<IdentExpr>(&c.callee->data)) {
+        if (ident->name == "println" || ident->name == "print") {
+            if (c.args.size() != 1) {
+                type_error("function '" + ident->name + "' expects 1 argument, got " +
+                           std::to_string(c.args.size()), e->line, e->col);
+            }
+            for (auto &arg : c.args) analyze_expr(arg);
+            return make_prim(PrimType::Void);
+        }
         auto it = fn_table_.find(ident->name);
         if (it != fn_table_.end()) {
-            for (auto &arg : c.args) analyze_expr(arg);
+            if (it->second->is_extern) {
+                type_error("extern function calls are not supported by this runtime yet", e->line, e->col);
+            }
+            if (c.args.size() != it->second->params.size()) {
+                type_error("function '" + ident->name + "' expects " +
+                           std::to_string(it->second->params.size()) + " arguments, got " +
+                           std::to_string(c.args.size()), e->line, e->col);
+            }
+            for (size_t i = 0; i < c.args.size(); i++) {
+                TypePtr arg_ty = analyze_expr(c.args[i]);
+                TypePtr param_ty = it->second->params[i].type;
+                if (!types_compatible(param_ty, arg_ty)) {
+                    type_error("argument " + std::to_string(i + 1) + " for '" + ident->name +
+                               "' expected " + type_name(param_ty) + ", found " +
+                               type_name(arg_ty), c.args[i]->line, c.args[i]->col);
+                }
+            }
             return it->second->ret_type;
         }
+        Symbol *sym = lookup(ident->name);
+        if (!sym) {
+            type_error("undefined function '" + ident->name + "'", e->line, e->col);
+        }
+        type_error("symbol '" + ident->name + "' is not callable", e->line, e->col);
     }
     analyze_expr(c.callee);
     for (auto &arg : c.args) analyze_expr(arg);
+    type_error("unsupported dynamic function call", e->line, e->col);
     return make_prim(PrimType::Void);
 }
 

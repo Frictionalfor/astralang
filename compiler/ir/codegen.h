@@ -43,6 +43,7 @@ private:
     void gen_return(const ReturnStmt &s);
     void gen_expr(const ExprPtr &e);
     void gen_call(const CallExpr &c);
+    void gen_short_circuit(const BinopExpr &b, bool is_and);
 
     void emit(OpCode op, int64_t a = 0, int64_t b = 0);
     int  emit_placeholder(OpCode op);

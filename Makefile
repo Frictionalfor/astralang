@@ -23,7 +23,7 @@ COMPILER_SRC = compiler/main.cpp \
 
 COMPILER_OBJS = $(LEXER_OBJ) $(OPCODE_OBJ) $(ERROR_OBJ)
 
-.PHONY: all compiler runtime disasm clean run-hello run-structs test opcodes
+.PHONY: all compiler runtime disasm clean run-hello run-structs test regression opcodes
 
 all: compiler runtime disasm
 
@@ -89,6 +89,12 @@ test: compiler runtime disasm
 	@echo "=== version ==="
 	build/astrac version
 	$(RUNTIME_BIN) --version
+	@echo ""
+	@echo "=== regression ==="
+	bash tests/regression.sh
+
+regression: compiler runtime disasm
+	bash tests/regression.sh
 
 # ---- Clean ----
 clean:

@@ -15,6 +15,8 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <sys/wait.h>
+#include <unistd.h>
 
 extern "C" {
 #include "../include/astra_token.h"
@@ -74,6 +76,34 @@ static std::vector<Token> lex_all(const std::string &src, const char *path) {
     return toks;
 }
 
+static int run_program(const std::string &program, const std::vector<std::string> &args) {
+    std::vector<char *> argv;
+    argv.reserve(args.size() + 2);
+    argv.push_back(const_cast<char *>(program.c_str()));
+    for (const auto &arg : args) argv.push_back(const_cast<char *>(arg.c_str()));
+    argv.push_back(nullptr);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return 127;
+    }
+    if (pid == 0) {
+        execvp(program.c_str(), argv.data());
+        perror(program.c_str());
+        _exit(127);
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        perror("waitpid");
+        return 127;
+    }
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return 127;
+}
+
 // ---- write .asc module ----
 static void write_module(const IRModule &mod, const char *out_path, bool debug_flag, bool opt_flag) {
     FILE *f = fopen(out_path, "wb");
@@ -117,6 +147,7 @@ static void write_module(const IRModule &mod, const char *out_path, bool debug_f
 
 // ---- compile pipeline ----
 static IRModule compile(const char *src_path, astra::OptLevel opt_level, bool debug_mode) {
+    (void)debug_mode;
     std::string src = read_file(src_path);
     std::vector<Token> tokens = lex_all(src, src_path);
 
@@ -147,11 +178,21 @@ static IRModule compile(const char *src_path, astra::OptLevel opt_level, bool de
         exit(1);
     }
 
-    astra::Optimizer opt(opt_level);
-    opt.run(mod);
+    try {
+        astra::Optimizer opt(opt_level);
+        opt.run(mod);
 
-    astra::IRCodegen cg;
-    return cg.generate(mod);
+        astra::IRCodegen cg;
+        return cg.generate(mod);
+    } catch (const std::exception &e) {
+        AstraDiagnostic d{};
+        d.code = ASTRA_ERR_CODEGEN;
+        d.severity = ASTRA_SEVERITY_ERROR;
+        d.file = src_path; d.line = 0; d.col = 0;
+        d.message = e.what();
+        astra_print_diagnostic(&d);
+        exit(1);
+    }
 }
 
 // ---- commands ----
@@ -220,28 +261,31 @@ static void cmd_run(int argc, char **argv) {
     IRModule ir = compile(src_path, astra::OptLevel::O2, false);
     write_module(ir, "/tmp/astra_run.asc", false, true);
 
-    // find runtime binary relative to this executable
-    std::string rt = std::string(getenv("HOME")) + "/.local/bin/astra";
-    // fallback: look next to astrac
-    std::string cmd = rt + " /tmp/astra_run.asc";
-    if (trace) cmd += " --trace";
-    cmd += " --stack-limit " + std::to_string(stack_limit);
-
-    // try local build first
+    std::string rt;
     FILE *test = fopen("runtime/target/release/astra", "rb");
-    if (test) { fclose(test); cmd = "runtime/target/release/astra /tmp/astra_run.asc"; }
-    if (trace) cmd += " --trace";
-    cmd += " --stack-limit " + std::to_string(stack_limit);
+    if (test) {
+        fclose(test);
+        rt = "runtime/target/release/astra";
+    } else {
+        const char *home = getenv("HOME");
+        rt = home ? std::string(home) + "/.local/bin/astra" : "astra";
+    }
 
-    system(cmd.c_str());
+    std::vector<std::string> rt_args = {"/tmp/astra_run.asc"};
+    if (trace) rt_args.push_back("--trace");
+    rt_args.push_back("--stack-limit");
+    rt_args.push_back(std::to_string(stack_limit));
+
+    int status = run_program(rt, rt_args);
+    if (status != 0) exit(status);
 }
 
 static void cmd_disasm(int argc, char **argv) {
     if (argc < 1) { fprintf(stderr, "usage: astrac disasm <file.asc>\n"); exit(1); }
-    // delegate to astradis if available, else inline
-    std::string cmd = std::string("build/astradis ") + argv[0];
-    if (system(cmd.c_str()) != 0) {
+    int status = run_program("build/astradis", {argv[0]});
+    if (status != 0) {
         fprintf(stderr, "astradis not found — run: make disasm\n");
+        exit(status);
     }
 }
 

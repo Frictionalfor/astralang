@@ -40,6 +40,7 @@ static void collect_fn_indices(
 {
     for (auto &item : items) {
         if (auto *fn = std::get_if<FnDeclStmt>(&item->data)) {
+            if (fn->is_extern) continue;
             std::string qname = prefix.empty() ? fn->name : prefix + "::" + fn->name;
             fn_idx[qname] = counter++;
         } else if (auto *mod = std::get_if<ModDeclStmt>(&item->data)) {
@@ -86,7 +87,10 @@ IRModule IRCodegen::generate(const AstraModule &mod) {
 
     // entry point = "main"
     auto it = fn_idx_.find("main");
-    if (it != fn_idx_.end()) module.entry_func_index = it->second;
+    if (it == fn_idx_.end()) {
+        throw std::runtime_error("[codegen] missing required entrypoint 'fn main() -> void'");
+    }
+    module.entry_func_index = it->second;
 
     return module;
 }
@@ -244,6 +248,14 @@ void IRCodegen::gen_expr(const ExprPtr &e) {
             else                     emit(OP_LOAD_GLOBAL, 0);
         }
         else if constexpr (std::is_same_v<T, BinopExpr>) {
+            if (node.op == "&&") {
+                gen_short_circuit(node, true);
+                return;
+            }
+            if (node.op == "||") {
+                gen_short_circuit(node, false);
+                return;
+            }
             gen_expr(node.lhs);
             gen_expr(node.rhs);
             const std::string &op = node.op;
@@ -258,8 +270,6 @@ void IRCodegen::gen_expr(const ExprPtr &e) {
             else if (op == ">")  emit(OP_IGT);
             else if (op == "<=") emit(OP_ILTE);
             else if (op == ">=") emit(OP_IGTE);
-            else if (op == "&&") emit(OP_AND);
-            else if (op == "||") emit(OP_OR);
             else if (op == "&")  emit(OP_BAND);
             else if (op == "|")  emit(OP_BOR);
             else if (op == "^")  emit(OP_BXOR);
@@ -299,6 +309,32 @@ void IRCodegen::gen_expr(const ExprPtr &e) {
             gen_expr(node.inner);
         }
     }, e->data);
+}
+
+void IRCodegen::gen_short_circuit(const BinopExpr &b, bool is_and) {
+    if (is_and) {
+        gen_expr(b.lhs);
+        int lhs_false = emit_placeholder(OP_JMP_IFNOT);
+        gen_expr(b.rhs);
+        int rhs_false = emit_placeholder(OP_JMP_IFNOT);
+        emit(OP_PUSH_BOOL, 1);
+        int end = emit_placeholder(OP_JMP);
+        patch(lhs_false, current_pos());
+        patch(rhs_false, current_pos());
+        emit(OP_PUSH_BOOL, 0);
+        patch(end, current_pos());
+    } else {
+        gen_expr(b.lhs);
+        int lhs_true = emit_placeholder(OP_JMP_IF);
+        gen_expr(b.rhs);
+        int rhs_true = emit_placeholder(OP_JMP_IF);
+        emit(OP_PUSH_BOOL, 0);
+        int end = emit_placeholder(OP_JMP);
+        patch(lhs_true, current_pos());
+        patch(rhs_true, current_pos());
+        emit(OP_PUSH_BOOL, 1);
+        patch(end, current_pos());
+    }
 }
 
 void IRCodegen::gen_call(const CallExpr &c) {
